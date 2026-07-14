@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRC Field Map Editor</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+
+        #sidebar {
+            width: 300px;
+            background-color: #252526;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            overflow-y: auto;
+        }
+
+        #main {
+            flex-grow: 1;
+            position: relative;
+            background-color: #1e1e1e;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        canvas {
+            background-color: #000;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            cursor: crosshair;
+        }
+
+        h2, h3 { color: #fff; margin-top: 0; }
+        
+        .section { margin-bottom: 20px; border-bottom: 1px solid #3e3e42; padding-bottom: 10px; }
+        
+        button {
+            background-color: #0e639c;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            cursor: pointer;
+            border-radius: 2px;
+            margin: 2px;
+        }
+        button:hover { background-color: #1177bb; }
+        button.delete { background-color: #ce3636; }
+        button.delete:hover { background-color: #e64545; }
+
+        input[type="text"], input[type="number"] {
+            background-color: #3c3c3c;
+            border: 1px solid #3c3c3c;
+            color: #ccc;
+            padding: 4px;
+            width: 100%;
+            margin-bottom: 4px;
+            box-sizing: border-box;
+        }
+
+        .item-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .item-list li {
+            padding: 8px;
+            background-color: #333;
+            margin-bottom: 4px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            cursor: pointer;
+        }
+
+        .item-list li.selected {
+            border-color: #007acc;
+            background-color: #37373d;
+        }
+
+        .item-controls {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+        }
+        
+        #file-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        #coords {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Field Editor</h2>
+    
+    <div id="file-controls">
+        <button onclick="document.getElementById('fileInput').click()">Load JSON</button>
+        <button onclick="saveJson()">Save JSON</button>
+        <input type="file" id="fileInput" accept=".json" style="display: none" onchange="loadJson(this)">
+    </div>
+
+    <div class="section">
+        <h3>Mode</h3>
+        <button onclick="setMode('select')" id="btn-select">Select/Move</button>
+        <button onclick="setMode('addPoint')" id="btn-addPoint">Add Point</button>
+        <button onclick="setMode('addRegion')" id="btn-addRegion">Add Region Info</button>
+        <p style="font-size: 0.8em; color: #888;">
+            Add Region: Click to place region center, then selection to edit points.
+            <br>
+            Double click background to create new Point/Region in those modes.
+        </p>
+    </div>
+
+    <div class="section">
+        <h3>Selected Item</h3>
+        <div id="properties">
+            <p>No item selected</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>Regions</h3>
+        <ul id="region-list" class="item-list"></ul>
+        <button onclick="createRegionAtCenter()">+ New Region</button>
+    </div>
+
+    <div class="section">
+        <h3>Points</h3>
+        <ul id="point-list" class="item-list"></ul>
+        <button onclick="createPointAtCenter()">+ New Point</button>
+    </div>
+</div>
+
+<div id="main">
+    <canvas id="fieldCanvas"></canvas>
+    <div id="coords">X: 0.00 Y: 0.00</div>
+</div>
+
+<script>
+    // Constants for Generic FRC Field
+    const FIELD_WIDTH = 16.54; // meters (651.2in)
+    const FIELD_HEIGHT = 8.07; // meters (317.7in)
+    let PPC = 60; // Pixels per meter scale
+    
+    const canvas = document.getElementById('fieldCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // State
+    let regions = []; // { id: "string", points: [{x,y}...] }
+    let points = [];  // { id: "string", x: 0, y: 0, z: 0 }
+    
+    let selectedType = null; // 'region' or 'point' or 'vertex'
+    let selectedId = null;   // id of region or point
+    let selectedVertexIndex = -1; // for region vertex editing
+
+    let mode = 'select'; // select, addPoint, addRegion
+
+    let dragTarget = null; // object being dragged
+    let isDragging = false; 
+
+    // Field Image
+    const fieldImage = new Image();
+    fieldImage.src = 'field.png';
+    fieldImage.onload = draw;
+
+    // Setup Canvas
+    function resize() {
+        const container = document.getElementById('main');
+        // Subtract some padding
+        const availWidth = container.clientWidth - 40;
+        const availHeight = container.clientHeight - 40;
+
+        const scaleX = availWidth / FIELD_WIDTH;
+        const scaleY = availHeight / FIELD_HEIGHT;
+
+        PPC = Math.min(scaleX, scaleY);
+        
+        canvas.width = FIELD_WIDTH * PPC;
+        canvas.height = FIELD_HEIGHT * PPC;
+        draw();
+    }
+    
+    window.addEventListener('resize', resize);
+    resize();
+
+    // -- Coordinate Transforms --
+    // Screen (0,0 is Top-Left) to Field (0,0 is Bottom-Left, typically Blue Alliance Wall Right Corner or Center? Standard is Bottom-Left)
+    function toField(screenX, screenY) {
+        return {
+            x: screenX / PPC,
+            y: (canvas.height - screenY) / PPC
+        };
+    }
+
+    function toScreen(fieldX, fieldY) {
+        return {
+            x: fieldX * PPC,
+            y: canvas.height - (fieldY * PPC)
+        };
+    }
+
+    // -- Draw Loop --
+    function draw() {
+        ctx.fillStyle = '#222';
+        ctx.fillRect(0, 0, canvas.width, canvas.height); // Clear
+
+        // Draw Field Image
+        if (fieldImage.complete && fieldImage.naturalWidth !== 0) {
+            ctx.drawImage(fieldImage, 0, 0, canvas.width, canvas.height);
+        }
+
+        // Draw Grid
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        for(let x=0; x<=FIELD_WIDTH; x+=1) {
+            let p = toScreen(x, 0);
+            ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, canvas.height); ctx.stroke();
+        }
+        for(let y=0; y<=FIELD_HEIGHT; y+=1) {
+            let p = toScreen(0, y);
+            ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(canvas.width, p.y); ctx.stroke();
+        }
+        
+        // Draw Origin
+        let origin = toScreen(0,0);
+        ctx.strokeStyle = 'red';
+        ctx.beginPath();
+        ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(origin.x + 50, origin.y);
+        ctx.stroke();
+        ctx.strokeStyle = 'green';
+        ctx.beginPath();
+        ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(origin.x, origin.y - 50);
+        ctx.stroke();
+
+
+        // Draw Regions
+        regions.forEach(r => {
+            if(r.points.length < 2) return;
+            
+            ctx.fillStyle = (selectedType === 'region' && selectedId === r.id) ? 'rgba(0, 100, 255, 0.3)' : 'rgba(100, 100, 100, 0.2)';
+            ctx.strokeStyle = (selectedType === 'region' && selectedId === r.id) ? '#007acc' : '#666';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            let start = toScreen(r.points[0].x, r.points[0].y);
+            ctx.moveTo(start.x, start.y);
+            for(let i=1; i<r.points.length; i++) {
+                let p = toScreen(r.points[i].x, r.points[i].y);
+                ctx.lineTo(p.x, p.y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Draw vertices
+            if (selectedType === 'region' && selectedId === r.id) {
+                r.points.forEach((pt, idx) => {
+                    let s = toScreen(pt.x, pt.y);
+                    ctx.fillStyle = (selectedVertexIndex === idx) ? 'yellow' : 'white';
+                    ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI*2); ctx.fill();
+                });
+            }
+
+            // Draw Label
+            let center = getRegionCenter(r);
+            let sCenter = toScreen(center.x, center.y);
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px sans-serif';
+            ctx.fillText(r.id, sCenter.x - 10, sCenter.y);
+        });
+
+        // Draw Points
+        points.forEach(p => {
+            let s = toScreen(p.x, p.y);
+            ctx.fillStyle = (selectedType === 'point' && selectedId === p.id) ? '#ffaa00' : '#ff5500';
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, 6, 0, Math.PI*2);
+            ctx.fill();
+            
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px sans-serif';
+            ctx.fillText(p.id, s.x + 8, s.y - 8);
+        });
+    }
+
+    function getRegionCenter(region) {
+        let x = 0, y = 0;
+        region.points.forEach(p => { x += p.x; y += p.y; });
+        return { x: x/region.points.length, y: y/region.points.length };
+    }
+
+    // -- Selection Logic --
+    function hitTest(x, y) {
+        // Check points
+        for(let p of points) {
+            let s = toScreen(p.x, p.y);
+            let dist = Math.hypot(s.x - x, s.y - y);
+            if(dist < 10) return { type: 'point', id: p.id, item: p };
+        }
+
+        // Check region vertices
+        if(selectedType === 'region') {
+            let r = regions.find(r => r.id === selectedId);
+            if(r) {
+                for(let i=0; i<r.points.length; i++) {
+                    let s = toScreen(r.points[i].x, r.points[i].y);
+                    let dist = Math.hypot(s.x - x, s.y - y);
+                    if(dist < 8) return { type: 'vertex', id: r.id, index: i, item: r.points[i] };
+                }
+            }
+        }
+
+        // Check regions (simple bbox or center)
+        for(let r of regions) {
+            // Very simple hit test using center
+            let c = getRegionCenter(r);
+            let s = toScreen(c.x, c.y);
+            // Or ideally use pnpoly
+            if(pointInPoly(toField(x,y), r.points)) {
+                 return { type: 'region', id: r.id, item: r };
+            }
+        }
+
+        return null;
+    }
+
+    function pointInPoly(pt, poly) {
+        let x = pt.x, y = pt.y;
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            let xi = poly[i].x, yi = poly[i].y;
+            let xj = poly[j].x, yj = poly[j].y;
+            let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    // -- Interaction --
+    canvas.addEventListener('mousedown', e => {
+        let rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+
+        if (mode === 'addPoint') {
+            createPointAt(toField(mx, my));
+            mode = 'select'; // switch back
+            return;
+        }
+
+        let hit = hitTest(mx, my);
+
+        if (hit) {
+            isDragging = true;
+            dragTarget = hit;
+            
+            if (hit.type === 'vertex') {
+                selectedType = 'region';
+                selectedId = hit.id;
+                selectedVertexIndex = hit.index;
+            } else {
+                selectedType = hit.type;
+                selectedId = hit.id;
+                selectedVertexIndex = -1;
+            }
+            updateUI();
+            draw();
+        } else {
+            // Deselect
+            selectedType = null;
+            selectedId = null;
+            selectedVertexIndex = -1;
+            updateUI();
+            draw();
+        }
+    });
+
+    canvas.addEventListener('mousemove', e => {
+        let rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
+        
+        let world = toField(mx, my);
+        document.getElementById('coords').innerText = `X: ${world.x.toFixed(2)} Y: ${world.y.toFixed(2)}`;
+
+        if (isDragging && dragTarget) {
+            if (dragTarget.type === 'point') {
+                dragTarget.item.x = world.x;
+                dragTarget.item.y = world.y;
+            } else if (dragTarget.type === 'vertex') {
+                dragTarget.item.x = world.x;
+                dragTarget.item.y = world.y;
+            } else if (dragTarget.type === 'region') {
+                // Dragging whole region
+                // Calculate delta? Naah implementing dragging whole region is complex for this snippet
+                // Let's just say you can only drag vertices
+            }
+            draw();
+            updateUI(); // live update coords
+        }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+        isDragging = false;
+        dragTarget = null;
+    });
+
+    canvas.addEventListener('dblclick', e => {
+         let rect = canvas.getBoundingClientRect();
+         let mx = e.clientX - rect.left;
+         let my = e.clientY - rect.top;
+         let world = toField(mx, my);
+
+         if (selectedType === 'region' && selectedId) {
+             let r = regions.find(r => r.id === selectedId);
+             if (pointInPoly(world, r.points)) {
+                 // Insert vertex at nearest edge or end? 
+                 // For simplicity, finding nearest segment index to insert into would be best UX,
+                 // but appending is what was requested/easier. 
+                 // Let's at least append so it stays a valid polygon.
+                 
+                 // Better: Find closest edge and insert
+                 let bestIdx = -1;
+                 let bestDist = Infinity;
+                 
+                 for(let i=0; i<r.points.length; i++) {
+                     let p1 = r.points[i];
+                     let p2 = r.points[(i+1)%r.points.length];
+                     let dist = distToSegment(world, p1, p2);
+                     if (dist < bestDist) {
+                         bestDist = dist;
+                         bestIdx = i;
+                     }
+                 }
+                 
+                 // Insert after bestIdx
+                 r.points.splice(bestIdx + 1, 0, {x: world.x, y: world.y});
+                 
+                 selectedVertexIndex = bestIdx + 1;
+                 draw();
+                 updateUI();
+             }
+         }
+    });
+
+    function distToSegment(p, v, w) {
+        let l2 = (v.x - w.x)**2 + (v.y - w.y)**2;
+        if (l2 == 0) return Math.hypot(p.x - v.x, p.y - v.y);
+        let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+    }
+
+
+    // -- UI Logic --
+    function setMode(m) {
+        mode = m;
+        document.querySelectorAll('.section button').forEach(b => b.style.backgroundColor = '');
+        let btn = document.getElementById('btn-' + m);
+        if(btn) btn.style.backgroundColor = '#444';
+    }
+
+    function createPointAt(pos, id) {
+        let newId = id || "Point " + (points.length + 1);
+        let p = { id: newId, x: pos.x, y: pos.y, z: 0 };
+        points.push(p);
+        selectedType = 'point';
+        selectedId = newId;
+        draw();
+        updateUI();
+    }
+    
+    function createPointAtCenter() {
+        createPointAt({x: FIELD_WIDTH/2, y: FIELD_HEIGHT/2});
+    }
+
+    function createRegionAtCenter() {
+        let id = "Region " + (regions.length + 1);
+        let cx = FIELD_WIDTH/2;
+        let cy = FIELD_HEIGHT/2;
+        regions.push({
+            id: id,
+            points: [
+                {x: cx - 1, y: cy - 1},
+                {x: cx + 1, y: cy - 1},
+                {x: cx + 1, y: cy + 1},
+                {x: cx - 1, y: cy + 1}
+            ]
+        });
+        selectedType = 'region';
+        selectedId = id;
+        draw();
+        updateUI();
+    }
+
+    function updateUI() {
+        // Render Lists
+        let rList = document.getElementById('region-list');
+        rList.innerHTML = '';
+        regions.forEach(r => {
+            let li = document.createElement('li');
+            li.innerText = r.id;
+            if(selectedType === 'region' && selectedId === r.id) li.className = 'selected';
+            li.onclick = () => { selectedType = 'region'; selectedId = r.id; draw(); updateUI(); };
+            rList.appendChild(li);
+        });
+
+        let pList = document.getElementById('point-list');
+        pList.innerHTML = '';
+        points.forEach(p => {
+            let li = document.createElement('li');
+            li.innerText = p.id;
+            if(selectedType === 'point' && selectedId === p.id) li.className = 'selected';
+            li.onclick = () => { selectedType = 'point'; selectedId = p.id; draw(); updateUI(); };
+            pList.appendChild(li);
+        });
+
+        // Render Properties
+        let props = document.getElementById('properties');
+        if (!selectedId) {
+            props.innerHTML = '<p>No item selected</p>';
+            return;
+        }
+
+        if (selectedType === 'point') {
+            let p = points.find(x => x.id === selectedId);
+            if(!p) return;
+            props.innerHTML = `
+                <label>ID</label> <input type="text" value="${p.id}" onchange="updateId(this.value)">
+                <label>X (m)</label> <input type="number" step="0.01" value="${p.x.toFixed(3)}" onchange="updateVal('x', this.value)">
+                <label>Y (m)</label> <input type="number" step="0.01" value="${p.y.toFixed(3)}" onchange="updateVal('y', this.value)">
+                <label>Z (m)</label> <input type="number" step="0.01" value="${p.z.toFixed(3)}" onchange="updateVal('z', this.value)">
+                <button class="delete" onclick="deleteItem()">Delete Point</button>
+            `;
+        } else if (selectedType === 'region') {
+            let r = regions.find(x => x.id === selectedId);
+            if(!r) return;
+            
+            let verticesHtml = '';
+            r.points.forEach((pt, idx) => {
+                let bg = (selectedVertexIndex === idx) ? '#37373d' : '';
+                verticesHtml += `<div style="display:flex; gap:2px; margin-bottom:2px; align-items:center; background:${bg}" onmouseenter="selectedVertexIndex=${idx}; draw();">
+                    <span style="width:20px; font-size:0.8em; color:#888; text-align:right; margin-right:4px;">${idx}</span>
+                    <input type="number" step="0.01" style="width:60px" value="${pt.x.toFixed(2)}" onchange="updateRegionVertex(${idx}, 'x', this.value)">
+                    <input type="number" step="0.01" style="width:60px" value="${pt.y.toFixed(2)}" onchange="updateRegionVertex(${idx}, 'y', this.value)">
+                    <button style="padding:2px 5px; background:#ce3636; font-size:0.8em; margin-left:auto;" onclick="deleteRegionVertex(${idx})">x</button>
+                </div>`;
+            });
+
+            props.innerHTML = `
+                <label>ID</label> <input type="text" value="${r.id}" onchange="updateId(this.value)">
+                <div style="margin-top:10px; margin-bottom:10px;">
+                    <label style="display:block; margin-bottom:4px; font-weight:bold;">Vertices</label>
+                    <div style="max-height: 250px; overflow-y: auto; padding-right:4px;">
+                        ${verticesHtml}
+                    </div>
+                </div>
+                 <button class="delete" onclick="deleteItem()">Delete Region</button>
+            `;
+        }
+    }
+
+    function updateRegionVertex(idx, axis, val) {
+        if (selectedType === 'region' && selectedId) {
+            let r = regions.find(x => x.id === selectedId);
+            if (r && r.points[idx]) {
+                r.points[idx][axis] = parseFloat(val);
+                draw();
+            }
+        }
+    }
+
+    function deleteRegionVertex(idx) {
+        if (selectedType === 'region' && selectedId) {
+            let r = regions.find(x => x.id === selectedId);
+            if (r) {
+                if (r.points.length <= 3) {
+                     alert("Region must have at least 3 points");
+                     return;
+                }
+                r.points.splice(idx, 1);
+                selectedVertexIndex = -1;
+                draw();
+                updateUI();
+            }
+        }
+    }
+
+    function updateId(newId) {
+        if (selectedType === 'point') {
+            let p = points.find(x => x.id === selectedId);
+            p.id = newId;
+            selectedId = newId;
+        } else {
+            let r = regions.find(x => x.id === selectedId);
+            r.id = newId;
+            selectedId = newId;
+        }
+        updateUI();
+        draw();
+    }
+
+    function updateVal(field, val) {
+        let v = parseFloat(val);
+        if (selectedType === 'point') {
+            let p = points.find(x => x.id === selectedId);
+            p[field] = v;
+        }
+        draw();
+    }
+
+    function deleteItem() {
+        if (!confirm('Area you sure?')) return;
+        if (selectedType === 'point') {
+            points = points.filter(p => p.id !== selectedId);
+        } else {
+            regions = regions.filter(r => r.id !== selectedId);
+        }
+        selectedId = null;
+        selectedType = null;
+        draw();
+        updateUI();
+    }
+
+    // -- File IO --
+    function loadJson(input) {
+        let file = input.files[0];
+        if (!file) return;
+        
+        let reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                let data = JSON.parse(e.target.result);
+                regions = data.regions || [];
+                points = data.points || [];
+                draw();
+                updateUI();
+            } catch(err) {
+                alert("Error parsing JSON: " + err);
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    function saveJson() {
+        let data = {
+            regions: regions,
+            points: points
+        };
+        let blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement('a');
+        a.href = url;
+        a.download = "field_map.json";
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+    
+    // Initial draw
+    draw();
+    updateUI();
+
+</script>
+</body>
+</html>
