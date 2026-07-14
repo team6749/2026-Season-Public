@@ -1,0 +1,70 @@
+{
+    "name": "2026 Robot",
+    "isFTC": false,
+    "disableSimplification": true,
+    "rotations": [
+        {
+            "axis": "x",
+            "degrees": 90
+        }
+    ],
+    "position": [
+        0,
+        0,
+        0.12
+    ],
+    "cameras": [],
+    "components": [
+         {
+            "zeroedRotations": [
+                {
+                    "axis": "x",
+                    "degrees": 90
+                },
+                 {
+                    "axis": "z",
+                    "degrees": 180
+                }
+            ],
+            "zeroedPosition": [
+                -0.75,
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "zeroedRotations": [
+                {
+                    "axis": "x",
+                    "degrees": 90
+                },
+                {
+                    "axis": "z",
+                    "degrees": 180
+                }
+            ],
+            "zeroedPosition": [
+                -0.13,
+                0.14,
+                -0.37
+            ]
+        },
+        {
+            "zeroedRotations": [
+                {
+                    "axis": "x",
+                    "degrees": 80
+                },
+                {
+                    "axis": "z",
+                    "degrees": 180
+                }
+            ],
+            "zeroedPosition": [
+                -0.13,
+                0.14,
+                -0.44
+            ]
+        }
+    ]
+}

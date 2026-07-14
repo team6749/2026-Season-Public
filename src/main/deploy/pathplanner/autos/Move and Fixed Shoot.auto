@@ -1,0 +1,25 @@
+{
+  "version": "2025.0",
+  "command": {
+    "type": "sequential",
+    "data": {
+      "commands": [
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Move and Fixed Shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "FixedShoot"
+          }
+        }
+      ]
+    }
+  },
+  "resetOdom": true,
+  "folder": "2026 Autos",
+  "choreoAuto": false
+}
